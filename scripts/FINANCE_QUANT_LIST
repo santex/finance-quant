@@ -1,0 +1,473 @@
+#!/usr/bin/perl 
+
+eval 'exec /usr/bin/perl  -S $0 ${1+"$@"}'
+    if 0; # not running under some shell
+
+package Mydbm;  # assumes Some/Module.pm
+#!/usr/bin/perl
+use strict;
+use warnings;
+no warnings 'redefine';
+use lib qw(../lib lib);
+use threads;
+use Thread::Queue;
+use Cache::Memcached;
+use Data::Dumper;
+use DBI;
+use Storable qw(lock_retrieve lock_store);
+use Carp;
+use LWP::UserAgent;
+use Log::Log4perl qw(:easy);
+use JSON::XS;
+use Digest::MD5;
+use File::Find;
+use Data::Dumper;
+use File::Basename;
+use Getopt::Long;
+use JSON::XS;
+
+use XML::RSS;
+
+
+
+
+my %opts = (publish=> 0,all=> 0);
+
+GetOptions (\%opts,"publish!","all!");
+
+our @request = @ARGV;
+our $n = $#ARGV;
+our $THREADS = 10;
+our $Qwork = new Thread::Queue;
+our $Qresults = new Thread::Queue;
+our $dir = sprintf $ENV{HOME}."/.Publisher";
+my $Census = {};
+my $Debugging = 0;
+
+
+BEGIN {
+    use Exporter   ();
+    our ($VERSION, @ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS,$dir);
+
+    # set the version for version checking
+    $VERSION     = 1.00;
+    # if using RCS/CVS, this may be preferred
+    $VERSION = sprintf "%d.%03d", q$Revision: 1.1 $ =~ /(\d+)/g;
+
+    @ISA         = qw(Exporter);
+    @EXPORT      = qw(&func1 &func2 &func4);
+    %EXPORT_TAGS = ( );     # eg: TAG => [ qw!name1 name2! ],
+
+    # your exported package globals go here,
+    # as well as any optionally exported functions
+    @EXPORT_OK   = qw($Var1 %Hashit &func3 $dir);
+
+	if(!`ls $ENV{HOME}/.Publisher/json/`){
+			`mkdir -p $ENV{HOME}/.Publisher/json/`;
+
+
+	}
+	$dir = sprintf $ENV{HOME}."/.Publisher";
+    my $conf = '
+    log4perl.category                  = DEBUG, Logfile
+    log4perl.appender.Logfile          = Log::Log4perl::Appender::File
+    log4perl.appender.Logfile.recreate = 1
+    log4perl.appender.Logfile.recreate_check_signal = USR1
+    log4perl.appender.Logfile.recreate_pid_write = '.$dir.'/test.pid
+    log4perl.appender.Logfile.mode = append
+    log4perl.appender.Logfile.filename = '.$dir.'/test.log
+    log4perl.appender.Logfile.layout = Log::Log4perl::Layout::PatternLayout
+    log4perl.appender.Logfile.layout.ConversionPattern = %d %F{1} %L> %m%n
+    ';
+
+    Log::Log4perl->init(\$conf);
+
+
+}
+our @EXPORT_OK;
+my @modules;
+our %val = ();
+our $path={"dir"=>"/var/www/data/upload",
+           "url"=>"http://html5stockbot.com/data/upload"};
+
+
+
+
+# return only matching modules
+sub wantedx {
+
+
+   /^F*(Market|Quant|Quant*Home|NASDAQ|Optical).*\.pm$/ &&
+    push @modules, $File::Find::name;
+
+}
+
+
+sub searchModule{
+
+    my @return = ();
+    # look in the @IRC dirs that exist
+    find(\&wantedx, grep { -r and -d } @INC);
+
+
+
+    # de-dupe
+    my %saw;
+    @modules = grep(!$saw{$_}++, @modules);
+
+    # strip extraneous directories off the modules
+    for my $prefix ( sort { length $b <=> length $a } @INC ) {
+      for (@modules) {
+          next unless($_ =~ /Finance/);
+          next if s/^\Q$prefix//
+       }
+    }
+
+
+    return  \@return;
+}
+
+
+
+
+sub DirContent ($ $ $)
+{
+    my ($path, $id ,$spath) = @_;
+
+    my $xpath =  $spath->{url} .$path;
+     $path = sprintf("%s%s",$spath->{dir},$path);
+     my $ret = "$id: $path\n";
+
+    local *DIR;
+
+    unless ( opendir DIR, $path )
+    {
+    	$ret .= "$id: can't read $spath->{dir} $@";
+    }
+
+    my @tmp = readdir DIR;
+    closedir DIR;
+
+    my @results = ();
+    foreach(@tmp){
+          next if($_ eq "." || $_ eq "..");
+
+         if($_ =~ /$id/){
+           push @results,sprintf("%s/%s",$xpath,$_);
+         }
+
+    }
+
+    return @results;
+}
+
+sub read_data {
+    open FILE, '<',  $_[0]  || die "Couldn't open file: $!";
+    my $symbols={};
+    my $baseuri = "http://html5stockbot.com/data/upload/";
+    while ( <FILE> ) {
+        my @tmp;
+        chomp;
+        my @fields = split ",";
+
+        my $symbol = shift @fields;
+        my $pl = $fields[0];
+
+        if(defined $fields[0] && $fields[0] ne ""){
+            my $pct = $fields[0]/100;
+            my $csv = pop @fields;
+            my $report = pop @fields;
+            my $ibes = pop @fields;
+            my $check = pop @fields;
+            my $chart = pop @fields;
+            my $backtest = pop @fields;
+            my $datafile = $backtest;
+               $datafile =~ s/pdf/data/g;
+
+
+
+
+            $symbols->{$pl}={"symbol"=>$symbol,
+                             "pl"=>$pl,
+                             "pct"=>$pct,
+                             "csv"=>sprintf("%s%s",$baseuri,$csv),
+                             "report"=>sprintf("%s%s",$baseuri,$report),
+                             "ibes"=>sprintf("%s%s",$baseuri,$ibes),
+                             "chart"=>sprintf("%s%s",$baseuri,$chart),
+                             "datafile"=>sprintf("%s%s",$baseuri,$datafile),
+                             "backtest"=>sprintf("%s%s",$baseuri,$backtest),
+                            };
+
+
+
+
+
+        }
+    }
+    close( FILE );
+    return $symbols;
+    }
+
+
+
+sub getDateDir{
+  my $self = shift;
+  my @e = split " ",localtime;
+
+  if(defined($e[2]) && (length $e[2]) == 1) {
+    $e[2] = "0".$e[2];
+  }
+
+  return "$e[4]-$e[1]-$e[2]";
+
+}
+
+
+sub _tbl {
+		my ($stock, $q) = @_;
+		my $str = "";
+		my @headers = qw/ Date Open High Low Close Volume /;
+		my $tr_start = "<tr align=\"center\">\n";
+		$str .= "<table border=\"1\" cellpadding=\"3\" cellspacing=\"0\" width='400px'>\n";
+		$str .= $tr_start . "<td colspan=\"" . scalar @headers . "\">";
+		$str .= "<b>Stock: $stock</b></td></tr>\n";
+		$str .= $tr_start;
+		$str .= "<td><b>" . $headers[$_] . "</b></td>\n" for 0..$#headers;
+		$str .= "</tr>\n";
+		for my $i (reverse 0..$#{$q->{Date}}) {
+			$str .= $tr_start;
+			$str .= "<td ".($headers[$_] eq "Date" ? " width='140px' ":"").">" . $q->{$headers[$_]}->[$i] . "</td>\n" for 0..$#headers;
+			$str .= "</tr>\n";
+		}
+		$str .= "</table>\n";
+		return $str;
+	}
+
+
+
+my $cmd = sprintf(
+   "%s/Desktop/test/algoservice.sh /tmp/Finance-Quant/%s/ | grep -v symbols > ".
+   "/tmp/Finance-Quant/analysed.txt",$ENV{HOME},getDateDir);
+  `$cmd`;
+  
+my $data = read_data("/tmp/Finance-Quant/analysed.txt");
+my $symbols={};
+my $links ="<ol style='width:430px;'>";
+my $count = 0;
+for my $pl ( sort {$b <=> $a} keys %$data ) {
+
+next if ($pl<0 || $pl eq "");
+
+$links .= sprintf("<li >%s\t+%3.2f%%\t<a style='margin-left:50px;' href='".$data->{$pl}->{backtest}."'><b>☞ backtest</b></a>\t<img style='float:right;' src='%s' /></li><br />",$data->{$pl}->{symbol},$data->{$pl}->{pct},$data->{$pl}->{ibes}) unless($count >100);#."\n";
+
+$symbols->{$data->{$pl}->{symbol}} = $data->{$pl};
+
+$count++;
+}
+
+
+  my $keyx = {date=>[split " ",localtime],
+             places=>$path,
+
+  };
+#$keyx->{pdfchart}=[DirContent("/charts",'pdf$',$path)];
+#$keyx->{pdfbacktest}=[DirContent("/backtest",'pdf$',$path)];
+#$keyx->{ibesstrongbuy}=[DirContent("/ibes-strong-buy",'jpg$',$path)];
+#$keyx->{backtestdata}=[DirContent("/backtest",'data$',$path)];
+#$keyx->{csv}=[DirContent("/ratings/csv",'.csv$',$path)];
+#$keyx->{reports}->{top}=[DirContent("/ratings/top",'.php$',$path)];
+#$keyx->{reports}->{bottom}=[DirContent("/ratings/bottom",'.php$',$path)];
+#$keyx->{reports}->{inbetween}=[DirContent("/ratings/inbetween", '.php$',$path)];
+
+my $keyfile = encode_json $keyx;
+
+my $rss = XML::RSS->new(version => '2.0');
+$links .= "</ol><h3>All Thomson Reuters strong-buy contracts</h3><hr /> ".`$ENV{HOME}/Desktop/test/algoservice-blog.sh`;
+
+
+
+
+my $description = '
+<![CDATA[
+<pre>
+NYSE NASDAQ drill down  Backtesting Thomson Reuters IBES strong-buy contracts
+
+<img src="http://html5stockbot.com/img/small2.png" />
+
+<h2>㋡ Top 100 contracts out of 6000 !!!</h2>
+
+tested for Thomson Reuters IBES strong-buy
+and backtest performance based on trend following strategy on a daylie base
+long only trade size $10.000 USD
+
+
+</pre>
+<hr />
+'.$links.'
+]]>
+';
+my $author = '
+<![CDATA[
+☞  Hagen Geissler santex@cpan.org
+]]>
+';
+
+$rss->channel(title => "html5stockbot.com",
+	      link  => "http://html5stockbot.com",
+	      description =>  $description
+	      );
+
+
+
+#print "Language: ".$rss->channel('language')."\n";
+
+$rss->image(title => "html5stockbot.com",
+	    url => "http://html5stockbot.com/img/small3.png",
+	    link => "http://html5stockbot.com"
+	    );
+
+
+$description = '
+<![CDATA[
+<pre>
+NYSE NASDAQ drill down  Backtesting Thomson Reuters IBES strong-buy contracts
+
+<img src="http://html5stockbot.com/img/small2.png" />
+
+㋡
+
+<hr />
+css:
+datafile:
+chart:
+ibesstrongbuy:
+backtest:
+report:
+</pre>
+]]>
+';
+
+
+my @symbols = keys %$symbols;
+my $title = "";
+foreach (@symbols){
+my $symbol = $_;
+#$symbol =~s/http:\/\/html5stockbot.com\/data\/upload\/ratings\/top\/|[.]php$//g;
+
+
+
+$description = '
+<![CDATA[
+<pre>
+
+NYSE NASDAQ drill down  Backtesting Thomson Reuters IBES strong-buy contracts
+
+<img src="http://html5stockbot.com/img/small2.png" />
+
+㋡
+
+<hr />
+<table width="300px">
+<tr>
+<td>
+css
+</td><td>
+<a href="'.$symbols->{$symbol}->{csv}.'">Quotes [csv]</a>
+</td></tr>
+<tr><td>
+datafile</td><td><a href="'.$symbols->{$symbol}->{datafile}.'">Data File</a>
+</td></tr>
+<tr><td>
+chart</td><td><a href="'.$symbols->{$symbol}->{chart}.'">Chart</a>
+</td></tr>
+<tr><td>
+ibesstrongbuy</td><td><img src="'.$symbols->{$symbol}->{ibes}.'" />
+</td></tr>
+<tr><td>
+backtest</td><td><a href="'.$symbols->{$symbol}->{backtest}.'">Backtest</a>
+</td></tr>
+<tr><td>
+report</td><td><a href="'.$symbols->{$symbol}->{report}.'">Report</a>
+</td></tr>
+</table>
+</pre>
+]]>
+';
+
+
+$title = '
+<![CDATA[
+'.($symbols->{$symbol}->{pct}>0?'㋡ ':'☞  ').'  '.$symbol.' 1 year return '.($symbols->{$symbol}->{pct}).'% 
+]]>
+';
+
+
+$rss->add_item(title => $title,link  =>$symbols->{$symbol}->{report},description  => $description,author=>$author);
+}
+
+
+
+
+
+my $filename = "/tmp/Finance-Quant/".getDateDir(). "/html5stockbot.com.rss";
+`rm $filename`;
+open OUTFILE, ">$filename";
+print OUTFILE  $rss->as_string;
+close OUTFILE;
+
+`cp $filename /home/hagen/Desktop/;cp $filename /var/www/data/`;
+
+
+
+$filename = "/tmp/Finance-Quant/".getDateDir(). "/jsonlist_".getDateDir(). ".txt";
+open OUTFILE, ">$filename";
+print OUTFILE $keyfile;
+close OUTFILE;
+
+
+
+
+while(<DATA>){
+  chomp;
+  my($key,$value) = split(/=/,$_);
+  if( defined $key){
+    $val{$key} = $value;
+  }
+}
+foreach my $key(sort keys %val){
+    print $key."=$val{$key}\n";
+
+	if($key !~/cmd7|cmd6/ || $opts{all}==1){
+		system($val{$key}) unless($opts{publish}==0);
+	}
+}
+
+
+
+
+#
+#
+#__DATA__
+#cmd0=rm -r /var/www/data/upload/*
+#cmd1=cp -r /tmp/Finance-Quant/*/* /var/www/data/upload/
+#cmd2=rm -r /var/www/data/upload/download/
+#cmd5=chmod -R +r /var/www/data/upload
+#cmd4=rm /tmp/upload.zip
+#cmd5=cd /var/www/data/upload;
+#cmd6=cd /var/www/data/upload; zip -r /tmp/upload.zip backtest charts ratings
+#cmd7=scp /tmp/upload.zip root@algoservice.com:/tmp/upload.zip
+#cmd11=scp /tmp/Finance-Quant/*/html5stockbot.com.rss root@algoservice.com:/var/www/vhosts/html5stockbot.com/httpdocs/data/
+#cmd8=ssh -A root@algoservice.com unzip  -o -x /tmp/upload.zip -d  /var/www/vhosts/html5stockbot.com/httpdocs/data/upload/
+#cmd9=unzip  -o -x /tmp/upload.zip -d  /var/www/data/upload/
+#cmd10=chmod -R +r /var/www/data/upload/
+__DATA__
+cmdx=rm -r /home/hagen/www/www-0/data/upload/*
+cmd0=cp -r /tmp/Finance-Quant/*/* /home/hagen/www/www-0/data/upload/
+cmd1=rm /tmp/upload.zip
+cmd2=chmod -R +xr /home/hagen/www/www-0/data/upload/
+cmd3=/home/hagen/bin/./wwwswitch4.sh
+cmd4=cd /home/hagen/www/www-0/data/upload;
+cmd5=cd /home/hagen/www/www-0/data/upload/; zip -r /tmp/upload.zip backtest charts ratings
+cmd6=scp /tmp/upload.zip root@algoservice.com:/tmp/upload.zip
+cmd7=ssh -A root@algoservice.com unzip  -o -x /tmp/upload.zip -d  /var/www/vhosts/html5stockbot.com/httpdocs/data/upload/
+cmd8=unzip  -o -x /tmp/upload.zip -d  /home/hagen/www/www-0/data/upload/

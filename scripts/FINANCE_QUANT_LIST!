@@ -1,0 +1,265 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl  -S $0 ${1+"$@"}'
+    if 0; # not running under some shell
+
+package Mydbm;  # assumes Some/Module.pm
+#!/usr/bin/perl
+use strict;
+use warnings;
+no warnings 'redefine';
+use lib qw(../lib lib);
+use threads;
+use Thread::Queue;
+use Cache::Memcached;
+use Data::Dumper;
+use DBI;
+use Storable qw(lock_retrieve lock_store);
+use Carp;
+use LWP::UserAgent;
+use Log::Log4perl qw(:easy);
+use JSON::XS;
+use Digest::MD5;
+use File::Find;
+use Data::Dumper;
+use File::Basename;
+use Getopt::Long;
+use JSON::XS;
+
+use XML::RSS;
+
+
+
+
+my %opts = (publish=> 0,all=> 0);
+
+GetOptions (\%opts,"publish!","all!");
+
+our @request = @ARGV;
+our $n = $#ARGV;
+our $THREADS = 10;
+our $Qwork = new Thread::Queue;
+our $Qresults = new Thread::Queue;
+our $dir = sprintf $ENV{HOME}."/.Publisher";
+my $Census = {};
+my $Debugging = 0;
+
+
+BEGIN {
+    use Exporter   ();
+    our ($VERSION, @ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS,$dir);
+
+    # set the version for version checking
+    $VERSION     = 1.00;
+    # if using RCS/CVS, this may be preferred
+    $VERSION = sprintf "%d.%03d", q$Revision: 1.1 $ =~ /(\d+)/g;
+
+    @ISA         = qw(Exporter);
+    @EXPORT      = qw(&func1 &func2 &func4);
+    %EXPORT_TAGS = ( );     # eg: TAG => [ qw!name1 name2! ],
+
+    # your exported package globals go here,
+    # as well as any optionally exported functions
+    @EXPORT_OK   = qw($Var1 %Hashit &func3 $dir);
+
+	if(!`ls $ENV{HOME}/.Publisher/json/`){
+			`mkdir -p $ENV{HOME}/.Publisher/json/`;
+
+
+	}
+	$dir = sprintf $ENV{HOME}."/.Publisher";
+    my $conf = '
+    log4perl.category                  = DEBUG, Logfile
+    log4perl.appender.Logfile          = Log::Log4perl::Appender::File
+    log4perl.appender.Logfile.recreate = 1
+    log4perl.appender.Logfile.recreate_check_signal = USR1
+    log4perl.appender.Logfile.recreate_pid_write = '.$dir.'/test.pid
+    log4perl.appender.Logfile.mode = append
+    log4perl.appender.Logfile.filename = '.$dir.'/test.log
+    log4perl.appender.Logfile.layout = Log::Log4perl::Layout::PatternLayout
+    log4perl.appender.Logfile.layout.ConversionPattern = %d %F{1} %L> %m%n
+    ';
+
+    Log::Log4perl->init(\$conf);
+
+
+}
+our @EXPORT_OK;
+my @modules;
+our %val = ();
+our $path={"dir"=>"/var/www/data/upload","url"=>"http://html5stockbot.com/data/upload"};
+
+my $cmd = "cd ''/tmp/Finance-Quant/".getDateDir()."''";
+`$cmd`;
+
+# return only matching modules
+sub wantedx {
+
+
+   /^F*(Market|Quant|Quant*Home|NASDAQ|Optical).*\.pm$/ && push @modules, $File::Find::name;
+
+}
+
+
+sub searchModule{
+
+    my @return = ();
+    # look in the @IRC dirs that exist
+    find(\&wantedx, grep { -r and -d } @INC);
+
+
+
+    # de-dupe
+    my %saw;
+    @modules = grep(!$saw{$_}++, @modules);
+
+    # strip extraneous directories off the modules
+    for my $prefix ( sort { length $b <=> length $a } @INC ) {
+      for (@modules) {
+          next unless($_ =~ /Finance/);
+          next if s/^\Q$prefix//
+       }
+    }
+
+
+    return  \@return;
+}
+
+
+sub getDateDir{
+  my $self = shift;
+  my @e = split " ",gmtime;
+
+  if(defined($e[2]) && (length $e[2]) == 1) {
+    $e[2] = "0".$e[2];
+  }
+
+  return "$e[4]-$e[1]-$e[2]";
+
+}
+
+
+
+sub DirContent ($ $ $)
+{
+    my ($path, $id ,$spath) = @_;
+
+    my $xpath =  $spath->{url} .$path;
+     $path = sprintf("%s%s",$spath->{dir},$path);
+     my $ret = "$id: $path\n";
+
+    local *DIR;
+
+    unless ( opendir DIR, $path )
+    {
+    	$ret .= "$id: can't read $spath->{dir} $@";
+    }
+
+    my @tmp = readdir DIR;
+    closedir DIR;
+
+    my @results = ();
+    foreach(@tmp){
+          next if($_ eq "." || $_ eq "..");
+
+         if($_ =~ /$id/){
+           push @results,sprintf("%s/%s",$xpath,$_);
+         }
+
+    }
+
+    return @results;
+}
+
+
+  my $keyx = {date=>[split " ",localtime],
+             places=>$path,
+
+  };
+$keyx->{pdfchart}=[DirContent("/charts",'pdf$',$path)];
+$keyx->{pdfbacktest}=[DirContent("/backtest",'pdf$',$path)];
+$keyx->{ibesstrongbuy}=[DirContent("/ibes-strong-buy",'jpg$',$path)];
+$keyx->{backtestdata}=[DirContent("/backtest",'data$',$path)];
+$keyx->{csv}=[DirContent("/ratings/csv",'.csv$',$path)];
+$keyx->{reports}->{top}=[DirContent("/ratings/top",'.php$',$path)];
+$keyx->{reports}->{bottom}=[DirContent("/ratings/bottom",'.php$',$path)];
+$keyx->{reports}->{inbetween}=[DirContent("/ratings/inbetween",'.php$',$path)];
+
+my $keyfile = encode_json $keyx;
+
+
+
+my $rss = XML::RSS->new(version => '0.9');
+
+
+$rss->channel(title => "html5stockbot.com",
+	      link  => "http://html5stockbot.com",
+	      description => "analysis + trading + risk averse , exclusivly about strong-buy contracts issued by Institutional Brokers Estimate System / IBES"
+
+	      );
+#print "Language: ".$rss->channel('language')."\n";
+
+$rss->image(title => "html5stockbot.com",
+	    url => "http://html5stockbot.com/img/small3.png",
+	    link => "http://html5stockbot.com"
+	    );
+
+
+$rss->textinput(title => "quick finder",
+		description => "Use the text input below to search freshmeat",
+		name => "query",
+		link => "http://html5stockbot.com/search.php"
+		);
+
+
+my @top = @{$keyx->{reports}->{top}};
+my @bottom = @{$keyx->{reports}->{bottom}};
+my @inb = @{$keyx->{reports}->{inbetween}};
+
+foreach (@top){ my $symbol = $_; $symbol =~s/http:\/\/html5stockbot.com\/data\/upload\/ratings\/top\/|[.]php$//g;  $rss->add_item(title => "$symbol STRONG BUY top band",link  => $_); }
+foreach (@bottom) {my $symbol = $_; $symbol =~s/http:\/\/html5stockbot.com\/data\/upload\/ratings\/bottom\/|[.]php$//g; $rss->add_item(title => "$symbol STRONG BUY bottom band",link  => $_); }
+foreach (@inb) {my $symbol = $_; $symbol =~s/http:\/\/html5stockbot.com\/data\/upload\/ratings\/inbetween\/|[.]php$//g; $rss->add_item(title => "$symbol STRONG BUY middle band",link  => $_); }
+
+
+
+
+my $filename = "/tmp/Finance-Quant/".getDateDir(). "/html5stockbot.com.rss";
+open OUTFILE, ">$filename";
+print OUTFILE  $rss->as_string;
+close OUTFILE;
+
+
+
+
+$filename = "/tmp/Finance-Quant/".getDateDir(). "/jsonlist_".getDateDir(). ".txt";
+open OUTFILE, ">$filename";
+print OUTFILE $keyfile;
+close OUTFILE;
+
+
+
+
+
+
+
+while(<DATA>){
+  chomp;
+  my($key,$value) = split(/=/,$_);
+  if( defined $key){
+    $val{$key} = $value;
+  }
+}
+foreach my $key(sort keys %val){
+    print $key."=$val{$key}\n";
+
+	if($key !~/cmd7|cmd8/ || $opts{all}==1){
+		system($val{$key}) unless($opts{publish}==0);
+	}
+}
+
+
+
+
+#
+#
+__DATA__
