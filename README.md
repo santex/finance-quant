@@ -3,28 +3,12 @@ finance-quant
 
 Finance::Quant
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ```
 
 
 SEE ALSO
 
   YOU NEED
-  ~~~~~~~~
   
   PERL
   ----
