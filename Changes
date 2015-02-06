@@ -3,6 +3,7 @@ Revision history for Perl module Finance::Quant
 0.09 2015-02-?? SANTEX
     - Renamed the internal packages to be within the Finance::Quant::
       namespace.
+    - Added github repo to dist metadata and the pod documentation
 
 0.01 2012-01-23 SANTEX
 	- original version; created by h2xs 1.23 with options

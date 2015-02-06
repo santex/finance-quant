@@ -1143,6 +1143,9 @@ You can also look for information at:
   >require(quantstrat)
   >require(PerformanceAnalytics)
 
+=head1 REPOSITORY
+
+L<https://github.com/santex/finance-quant>
 
 __DATA__
 
