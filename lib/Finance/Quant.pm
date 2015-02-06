@@ -347,8 +347,8 @@ my $memd = new Cache::Memcached {
                     $self->writeFile($image,sprintf("ibes-strong-buy/%s.jpg",$sym ));
        my ($stocksymbol, $startdate, $enddate, $interval, $agent,$ma, $diff) = ($sym,"1-15-2011",0,"d","Mozilla/4.0",20, 1);
       
-       my $q = quotes::get($stocksymbol, $startdate, $enddate, $interval, $agent);
-        $self->{'result'}->{$sym}->{'extended'} = chart::extended($stocksymbol, $q, $ma, $diff);
+       my $q = Finance::Quant::Quotes::get($stocksymbol, $startdate, $enddate, $interval, $agent);
+        $self->{'result'}->{$sym}->{'extended'} = Finance::Quant::Chart::extended($stocksymbol, $q, $ma, $diff);
         $self->{'result'}->{$sym}->{'extended'}->{'guru-sum'}=sprintf("%d",mean(@overall));
         $ff = $self->get_source_image(sprintf($self->{config}->{sources}->{'NASDAQ_COMMUNITY'},$sym));
         if($ff =~ /<b>(.*)ratings<\/b>/){
@@ -357,12 +357,12 @@ my $memd = new Cache::Memcached {
         }
       
                   
-        my $out = chart::html($sym, $q, $ma, $diff, $self->{'result'}->{$sym},$self->{date}); 
+        my $out = Finance::Quant::Chart::html($sym, $q, $ma, $diff, $self->{'result'}->{$sym},$self->{date}); 
         
         
         if($out!~/png;base64,["]/){
         
-        my $check = chart::diffcheck($sym, $q, $ma, $diff);
+        my $check = Finance::Quant::Chart::diffcheck($sym, $q, $ma, $diff);
 
         
         if($check==1){
@@ -422,7 +422,7 @@ my $memd = new Cache::Memcached {
          # chdir("charts");
          # open OUT, ">$sym.php";
           
-         #print OUT chart::html($sym, $q, $ma, $diff);   # expecting headers: Date,Open,High,Low,Close,Volume
+         #print OUT Finance::Quant::Chart::html($sym, $q, $ma, $diff);   # expecting headers: Date,Open,High,Low,Close,Volume
         #  close OUT;
       }
     }
@@ -664,7 +664,7 @@ sub set_path {
 
 
 
-{package quotes;
+{package Finance::Quant::Quotes;
 	use LWP::UserAgent;
 	
 	sub get {
@@ -706,7 +706,7 @@ sub set_path {
 	}
 }
 
-{package chart;
+{package Finance::Quant::Chart;
 	use GD::Graph::lines;
 	use Statistics::Basic qw(mean);
   use MIME::Base64;
@@ -793,9 +793,9 @@ $str = "<html><head>$meta\n<title>\$$stock ,$date ,#$stock</title></head>".
 		my ($s, $lines) = ([],[]);
 		my $y_format = sub { sprintf " \$%.2f", exp $_[0] };
 		
-		$s = ts::logs($q->{Close});
+		$s = Finance::Quant::TS::logs($q->{Close});
 		$lines->[0] = {	name => 'Log of Closing Price', color => 'marine', data => $s };
-		$lines->[1] = {	name => "MA($diff) (Moving Avg)", color => 'cyan', data => ts::ma($lines->[0]->{data}, $diff) };
+		$lines->[1] = {	name => "MA($diff) (Moving Avg)", color => 'cyan', data => Finance::Quant::TS::ma($lines->[0]->{data}, $diff) };
 		
 		return plotlines($img, $stock, $q->{Date}, $lines, $y_format);
 		
@@ -808,11 +808,11 @@ $str = "<html><head>$meta\n<title>\$$stock ,$date ,#$stock</title></head>".
 		my ($s, $lines) = ([],[]);
 		my $y_format = sub { sprintf "  %.2f", $_[0] };
 
-		$s = ts::logs($q->{Close});
-		$lines->[0] = {	name => "Diff($diff)", color => 'marine', data => ts::diff($s, $diff) };
-		$lines->[1] = {	name => "MA($lag) (Moving Avg)", color => 'cyan', data => ts::ma($lines->[0]->{data}, $lag) };
-		$s = ts::stdev($lines->[0]->{data}, $lag);
-		$s = ts::nstdev_ma($s, $lines->[1]->{data}, 2);
+		$s = Finance::Quant::TS::logs($q->{Close});
+		$lines->[0] = {	name => "Diff($diff)", color => 'marine', data => Finance::Quant::TS::diff($s, $diff) };
+		$lines->[1] = {	name => "MA($lag) (Moving Avg)", color => 'cyan', data => Finance::Quant::TS::ma($lines->[0]->{data}, $lag) };
+		$s = Finance::Quant::TS::stdev($lines->[0]->{data}, $lag);
+		$s = Finance::Quant::TS::nstdev_ma($s, $lines->[1]->{data}, 2);
 		$lines->[2] = {	name => 'MA + 2 Std Dev', color => 'lred', data => $s->[0] };
 		$lines->[3] = {	name => 'MA - 2 Std Dev', color => 'lred', data => $s->[1] };
 		
@@ -875,12 +875,12 @@ $str = "<html><head>$meta\n<title>\$$stock ,$date ,#$stock</title></head>".
 		my $img = $stock . "diff.jpg";
 		my ($s, $lines) = ([],[]);
 		my $y_format = sub { sprintf "  %.2f", $_[0] };
-		$s = ts::logs($q->{Close});
-		my $diffx = ts::diff($s, $diff);
+		$s = Finance::Quant::TS::logs($q->{Close});
+		my $diffx = Finance::Quant::TS::diff($s, $diff);
 		$lines->[0] = {	name => "Diff($diff)", color => 'marine', data => $diffx };
-		$lines->[1] = {	name => "MA($lag) (Moving Avg)", color => 'cyan', data => ts::ma($lines->[0]->{data}, $lag) };
-		$s = ts::stdev($lines->[0]->{data}, $lag);
-		$s = ts::nstdev_ma($s, $lines->[1]->{data}, 2);
+		$lines->[1] = {	name => "MA($lag) (Moving Avg)", color => 'cyan', data => Finance::Quant::TS::ma($lines->[0]->{data}, $lag) };
+		$s = Finance::Quant::TS::stdev($lines->[0]->{data}, $lag);
+		$s = Finance::Quant::TS::nstdev_ma($s, $lines->[1]->{data}, 2);
 		$lines->[2] = {	name => 'MA + 2 Std Dev', color => 'lred', data => $s->[0] };
 		$lines->[3] = {	name => 'MA - 2 Std Dev', color => 'lred', data => $s->[1] };
 		my(@ty,@tx,@tu);
@@ -908,12 +908,12 @@ my $output= {"position"=>($check==0?"middle":($check==1?"bottom":"top")),
 		my $img = $stock . "diff.jpg";
 		my ($s, $lines) = ([],[]);
 		my $y_format = sub { sprintf "  %.2f", $_[0] };
-		$s = ts::logs($q->{Close});
-		my $diffx = ts::diff($s, $diff);
+		$s = Finance::Quant::TS::logs($q->{Close});
+		my $diffx = Finance::Quant::TS::diff($s, $diff);
 		$lines->[0] = {	name => "Diff($diff)", color => 'marine', data => $diffx };
-		$lines->[1] = {	name => "MA($lag) (Moving Avg)", color => 'cyan', data => ts::ma($lines->[0]->{data}, $lag) };
-		$s = ts::stdev($lines->[0]->{data}, $lag);
-		$s = ts::nstdev_ma($s, $lines->[1]->{data}, 2);
+		$lines->[1] = {	name => "MA($lag) (Moving Avg)", color => 'cyan', data => Finance::Quant::TS::ma($lines->[0]->{data}, $lag) };
+		$s = Finance::Quant::TS::stdev($lines->[0]->{data}, $lag);
+		$s = Finance::Quant::TS::nstdev_ma($s, $lines->[1]->{data}, 2);
 		$lines->[2] = {	name => 'MA + 2 Std Dev', color => 'lred', data => $s->[0] };
 		$lines->[3] = {	name => 'MA - 2 Std Dev', color => 'lred', data => $s->[1] };
 		my(@ty,@tx,@tu);
@@ -964,7 +964,7 @@ my $output= {"position"=>($check==0?"middle":($check==1?"bottom":"top")),
 		return $str;
 	}	
 }
-{package ts;
+{package Finance::Quant::TS;
 	sub logs {
 		my $s = shift;
 		return [ map {log} @{$s}[0..$#{$s}] ];

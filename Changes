@@ -1,6 +1,10 @@
-Revision history for Perl extension Finance::Quant.
+Revision history for Perl module Finance::Quant
 
-0.08  Tue Jan 17 00:07:28 2012
+0.09 2015-02-?? SANTEX
+    - Renamed the internal packages to be within the Finance::Quant::
+      namespace.
+
+0.01 2012-01-23 SANTEX
 	- original version; created by h2xs 1.23 with options
 		-XA Finance::Quant
 
