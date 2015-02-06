@@ -40,6 +40,11 @@ my $build = Module::Build->new(
     },
     recommends        => {
     },
+    meta_merge => {
+        resources => {
+            repository => 'https://github.com/santex/finance-quant'
+        }
+    },
 
 
  script_files => [
